@@ -67,6 +67,9 @@ export async function sendEmail(
 		body.attachments = params.attachments.map((att) => ({
 			content: att.content,
 			filename: att.filename,
+			type: att.type,
+			...(att.disposition ? { disposition: att.disposition } : {}),
+			...(att.contentId ? { content_id: att.contentId } : {}),
 		}));
 	}
 
@@ -80,8 +83,14 @@ export async function sendEmail(
 	});
 
 	if (!response.ok) {
-		const errorText = await response.text();
-		throw new Error(`Resend API error ${response.status}: ${errorText}`);
+		let errorDetail: string;
+		try {
+			const errorJson = (await response.json()) as { message?: string; name?: string };
+			errorDetail = errorJson.message || errorJson.name || JSON.stringify(errorJson);
+		} catch {
+			errorDetail = await response.text();
+		}
+		throw new Error(`Resend API error ${response.status}: ${errorDetail}`);
 	}
 
 	const data = (await response.json()) as { id: string };
