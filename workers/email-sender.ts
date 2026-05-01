@@ -3,11 +3,12 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 /**
- * Email sending via Cloudflare Email Service binding.
+ * Email sending via Resend API.
  *
- * Uses the `send_email` Worker binding (`env.EMAIL.send()`) to send emails.
+ * Uses the `RESEND_API_KEY` secret to send emails through https://api.resend.com.
+ * This replaces the Cloudflare Email Service binding which requires a paid Workers plan.
  *
- * See: https://developers.cloudflare.com/email-service/api/send-emails/workers-api/
+ * See: https://resend.com/docs/api-reference/emails/send-email
  */
 
 export interface SendEmailParams {
@@ -29,44 +30,60 @@ export interface SendEmailParams {
 	headers?: Record<string, string>;
 }
 
+function formatAddress(addr: string | { email: string; name: string }): string {
+	if (typeof addr === "string") return addr;
+	return `${addr.name} <${addr.email}>`;
+}
+
 /**
- * Send an email using the Cloudflare Email Service binding.
+ * Send an email using the Resend API.
  *
- * @param binding  - The `EMAIL` SendEmail binding from env
+ * @param apiKey   - The `RESEND_API_KEY` secret from env
  * @param params   - Email parameters (to, from, subject, body, etc.)
  * @returns The send result with messageId
- * @throws On validation or delivery errors (error has `.code` property)
+ * @throws On validation or delivery errors
  */
 export async function sendEmail(
-	binding: SendEmail,
+	apiKey: string,
 	params: SendEmailParams,
 ): Promise<{ messageId: string }> {
-	const message: Record<string, unknown> = {
-		to: params.to,
-		from: params.from,
+	const body: Record<string, unknown> = {
+		from: formatAddress(params.from),
+		to: Array.isArray(params.to) ? params.to : [params.to],
 		subject: params.subject,
 	};
 
-	if (params.html) message.html = params.html;
-	if (params.text) message.text = params.text;
-	if (params.cc) message.cc = params.cc;
-	if (params.bcc) message.bcc = params.bcc;
-	if (params.replyTo) message.replyTo = params.replyTo;
+	if (params.html) body.html = params.html;
+	if (params.text) body.text = params.text;
+	if (params.cc) body.cc = Array.isArray(params.cc) ? params.cc : [params.cc];
+	if (params.bcc) body.bcc = Array.isArray(params.bcc) ? params.bcc : [params.bcc];
+	if (params.replyTo) body.reply_to = formatAddress(params.replyTo);
 
 	if (params.headers && Object.keys(params.headers).length > 0) {
-		message.headers = params.headers;
+		body.headers = params.headers;
 	}
 
 	if (params.attachments && params.attachments.length > 0) {
-		message.attachments = params.attachments.map((att) => ({
+		body.attachments = params.attachments.map((att) => ({
 			content: att.content,
 			filename: att.filename,
-			type: att.type,
-			disposition: att.disposition,
-			...(att.contentId ? { contentId: att.contentId } : {}),
 		}));
 	}
 
-	const result = await binding.send(message as any);
-	return { messageId: result.messageId };
+	const response = await fetch("https://api.resend.com/emails", {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ${apiKey}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify(body),
+	});
+
+	if (!response.ok) {
+		const errorText = await response.text();
+		throw new Error(`Resend API error ${response.status}: ${errorText}`);
+	}
+
+	const data = (await response.json()) as { id: string };
+	return { messageId: data.id };
 }
